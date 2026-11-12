@@ -91,6 +91,43 @@ def test_registry_does_not_match_qwen_openai_compatible_route_to_dashscope_nativ
     assert caps.provider == "unknown"
 
 
+def test_route_context_uses_explicit_responses_surface_from_model_list():
+    route_context = build_provider_cache_route_context(
+        model="openai/gpt-5.6-sol",
+        provider="openai",
+        model_list=[
+            {
+                "model_name": "openai/gpt-5.6-sol",
+                "litellm_params": {"model": "openai/responses/gpt-5.6-sol"},
+                "model_info": {"dsa_api_surface": "responses"},
+            }
+        ],
+    )
+
+    assert route_context.api_surface == "responses"
+
+
+def test_route_context_marks_mixed_surface_alias_unknown():
+    route_context = build_provider_cache_route_context(
+        model="openai/shared-model",
+        provider="openai",
+        model_list=[
+            {
+                "model_name": "openai/shared-model",
+                "litellm_params": {"model": "openai/responses/shared-model"},
+                "model_info": {"dsa_api_surface": "responses"},
+            },
+            {
+                "model_name": "openai/shared-model",
+                "litellm_params": {"model": "openai/shared-model"},
+            },
+        ],
+    )
+
+    assert route_context.api_surface == "unknown"
+    assert resolve_provider_cache_caps(route_context).provider == "unknown"
+
+
 def test_registry_matches_dashscope_native_surface_only_for_native_route():
     caps = resolve_provider_cache_caps(
         ProviderCacheRouteContext(
@@ -359,7 +396,11 @@ def test_litellm_openai_prompt_cache_key_is_not_passed_through_without_verified_
             def log_message(self, *args):
                 return
 
-        server = HTTPServer(("127.0.0.1", 0), CaptureHandler)
+        try:
+            server = HTTPServer(("127.0.0.1", 0), CaptureHandler)
+        except PermissionError as exc:
+            print(f"LOCAL_SOCKET_UNAVAILABLE={exc}")
+            raise SystemExit(78)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -391,7 +432,11 @@ def test_litellm_openai_prompt_cache_key_is_not_passed_through_without_verified_
         timeout=15,
     )
     if completed.returncode == 77:
+        if "LOCAL_SOCKET_UNAVAILABLE" in completed.stdout + completed.stderr:
+            pytest.skip("local loopback sockets are unavailable")
         pytest.skip("litellm is not installed")
+    if completed.returncode == 78:
+        pytest.skip("local socket creation is not permitted in this environment")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     captured_line = next(
         (line for line in completed.stdout.splitlines() if line.startswith("CAPTURED_BODY=")),

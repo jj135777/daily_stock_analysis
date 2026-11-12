@@ -10,7 +10,7 @@ export interface PortfolioAccountItem {
   ownerId?: string | null;
   name: string;
   broker?: string | null;
-  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   baseCurrency: string;
   isActive: boolean;
   createdAt?: string | null;
@@ -24,7 +24,7 @@ export interface PortfolioAccountListResponse {
 export interface PortfolioAccountCreateRequest {
   name: string;
   broker?: string;
-  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   baseCurrency: string;
   ownerId?: string;
 }
@@ -46,6 +46,8 @@ export interface PortfolioPositionItem {
   priceDate?: string | null;
   priceStale?: boolean;
   priceAvailable?: boolean;
+  dataQuality?: 'ok' | 'partial' | string;
+  limitations?: string[];
 }
 
 export interface PortfolioPositionAnalysisRequest {
@@ -65,12 +67,16 @@ export interface PortfolioAccountSnapshot {
   costMethod: PortfolioCostMethod;
   totalCash: number;
   totalMarketValue: number;
+  /** Account market value converted into the parent snapshot currency. */
+  totalMarketValueAggregate?: number | null;
   totalEquity: number;
   realizedPnl: number;
   unrealizedPnl: number;
   feeTotal: number;
   taxTotal: number;
   fxStale: boolean;
+  dataQuality?: 'ok' | 'partial' | string;
+  limitations?: string[];
   positions: PortfolioPositionItem[];
 }
 
@@ -87,6 +93,8 @@ export interface PortfolioSnapshotResponse {
   feeTotal: number;
   taxTotal: number;
   fxStale: boolean;
+  dataQuality?: 'ok' | 'partial' | string;
+  limitations?: string[];
   accounts: PortfolioAccountSnapshot[];
 }
 
@@ -181,7 +189,7 @@ export interface PortfolioTradeCreateRequest {
   price: number;
   fee?: number;
   tax?: number;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   currency?: string;
   tradeUid?: string;
   note?: string;
@@ -201,7 +209,7 @@ export interface PortfolioCorporateActionCreateRequest {
   symbol: string;
   effectiveDate: string;
   actionType: PortfolioCorporateActionType;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   currency?: string;
   cashDividendPerShare?: number;
   splitRatio?: number;

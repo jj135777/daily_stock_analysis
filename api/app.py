@@ -19,6 +19,17 @@ import asyncio
 import json
 import logging
 import mimetypes
+
+import sys
+
+if sys.platform == "win32" and not mimetypes.inited:
+    _orig_read_windows_registry = getattr(mimetypes.MimeTypes, 'read_windows_registry', None)
+    if _orig_read_windows_registry is not None:
+        mimetypes.MimeTypes.read_windows_registry = lambda self, strict=True: None
+        try: mimetypes.init()
+        finally: mimetypes.MimeTypes.read_windows_registry = _orig_read_windows_registry
+    else:
+        mimetypes.init()
 import os
 import re
 from contextlib import asynccontextmanager, suppress
@@ -42,7 +53,12 @@ _INDEX_ASSET_REF_PATTERN = re.compile(
     r"""(?:src|href)\s*=\s*["'](/assets/[^"']+)["']""",
     re.IGNORECASE,
 )
-_SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset({"text/css", "text/javascript"})
+_FRONTEND_ASSET_MEDIA_TYPES = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+}
+_SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset(_FRONTEND_ASSET_MEDIA_TYPES.values())
 _FRONTEND_INDEX_NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -116,9 +132,23 @@ def _resolve_asset_path(assets_dir: Path, asset_path: str) -> Optional[Path]:
     return candidate
 
 
+def _register_frontend_asset_mime_types() -> None:
+    """Keep Vite module assets loadable even when OS MIME maps are wrong."""
+    for suffix, media_type in _FRONTEND_ASSET_MEDIA_TYPES.items():
+        mimetypes.add_type(media_type, suffix)
+
+
+def _frontend_asset_media_type(asset_path: str) -> Optional[str]:
+    suffix = Path(asset_path).suffix.lower()
+    if suffix in _FRONTEND_ASSET_MEDIA_TYPES:
+        return _FRONTEND_ASSET_MEDIA_TYPES[suffix]
+    content_type, _ = mimetypes.guess_type(asset_path)
+    return content_type
+
+
 def _missing_asset_media_type(asset_path: str) -> str:
     """Return a safe media type for a missing asset response."""
-    content_type, _ = mimetypes.guess_type(asset_path)
+    content_type = _frontend_asset_media_type(asset_path)
     if content_type in _SAFE_MISSING_ASSET_MEDIA_TYPES:
         return content_type
     return "text/plain"
@@ -135,6 +165,7 @@ def _warn_if_open_cors_without_auth() -> None:
 
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
+from api.middlewares.security_guard import add_guard_middleware, is_guard_enabled
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.auth import is_auth_enabled
@@ -259,6 +290,11 @@ async def app_lifespan(app: FastAPI):
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
     _schedule_stock_index_background_refresh(app, "startup")
+    # 名称解析器的 AkShare 缓存预热：命中磁盘缓存则零网络加载，否则发起
+    # 后台单飞拉取。把冷启动等待从首个用户请求挪到进程启动窗口。
+    from src.services.name_to_code_resolver import warmup_akshare_cache
+
+    warmup_akshare_cache()
     try:
         yield
     finally:
@@ -286,6 +322,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         配置完成的 FastAPI 应用实例
     """
     # 默认静态文件目录
+    _register_frontend_asset_mime_types()
+
     if static_dir is None:
         static_dir = Path(__file__).parent.parent / "static"
     
@@ -329,6 +367,15 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         _warn_if_open_cors_without_auth()
         allowed_origins = ["*"]
     
+    # Optional fastapi-guard (GUARD_ENABLED, default off). Starlette makes the last
+    # added middleware the outermost, so with the guard on the order is
+    # CORS > guard > auth: guard 429/403 responses carry CORS headers and the guard
+    # screens a request before the auth middleware sees it. Off keeps the old order.
+    guard_enabled = is_guard_enabled()
+    if guard_enabled:
+        add_auth_middleware(app)
+        add_guard_middleware(app)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -337,7 +384,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    add_auth_middleware(app)
+    if not guard_enabled:
+        add_auth_middleware(app)
     
     # ============================================================
     # 注册路由
@@ -516,7 +564,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                     return _frontend_index_response(static_dir)
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
-                content_type, _ = mimetypes.guess_type(str(file_path))
+                content_type = _frontend_asset_media_type(str(file_path))
                 return FileResponse(file_path, media_type=content_type)
 
             return _frontend_index_response(static_dir)

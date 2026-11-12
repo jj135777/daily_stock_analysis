@@ -2,10 +2,30 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { UiLanguageProvider, useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { getFieldDescriptionZh, getFieldTitleZh } from '../../../utils/systemConfigI18n';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { SettingsField } from '../SettingsField';
 
 describe('SettingsField', () => {
+  it.each(['zh', 'en'] as const)('shows the retired value explicitly and lets the user correct it (%s)', (language) => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, language);
+    const onChange = vi.fn();
+    render(<UiLanguageProvider><SettingsField item={{
+      key: 'AGENT_BACKEND', value: 'codex_app_server', rawValueExists: true, isMasked: false,
+      schema: { key: 'AGENT_BACKEND', category: 'agent', dataType: 'string', uiControl: 'select',
+        isSensitive: false, isRequired: false, isEditable: true, displayOrder: 1,
+        options: ['auto', 'litellm'], validation: { enum: ['auto', 'litellm'] } },
+    }} value="codex_app_server" onChange={onChange} /></UiLanguageProvider>);
+    const selector = screen.getByRole('combobox');
+    expect(selector).toHaveValue('codex_app_server');
+    expect(screen.getByRole('option', { selected: true })).toBeDisabled();
+    expect(screen.getByRole('option', { selected: true }).textContent).toContain(language === 'en' ? 'removed' : '已移除');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(selector, { target: { value: 'auto' } });
+    expect(onChange).toHaveBeenCalledWith('AGENT_BACKEND', 'auto');
+    window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  });
+
   it('prefers localized Chinese field titles over backend schema titles', () => {
     render(
       <SettingsField
@@ -37,6 +57,73 @@ describe('SettingsField', () => {
     expect(screen.queryByLabelText('Stock List')).not.toBeInTheDocument();
   });
 
+  it('localizes TickFlow field descriptions instead of falling back to backend English schema', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'TICKFLOW_PRIORITY',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('TickFlow 日 K 优先级')).toBeInTheDocument();
+    expect(screen.getByText(/控制 TickFlow 在普通 A 股日 K 回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
+  it('uses schema key for TickFlow localization when the runtime item key differs', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'runtime.tickflow.priority',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText(getFieldTitleZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.getByText(getFieldDescriptionZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.queryByLabelText('TickFlow Priority')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
   it('renders sensitive field metadata and validation errors', () => {
     const onChange = vi.fn();
 
@@ -215,12 +302,6 @@ describe('SettingsField', () => {
         options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         expectedLabels: ['调试', '信息', '警告', '错误', '严重'],
       },
-      {
-        key: 'MARKET_REVIEW_REGION',
-        category: 'system',
-        options: ['cn', 'hk', 'us', 'both'],
-        expectedLabels: ['A 股', '港股', '美股', '全部市场'],
-      },
     ] as const;
 
     selectCases.forEach(({ key, category, options, expectedLabels }) => {
@@ -260,6 +341,45 @@ describe('SettingsField', () => {
 
       unmount();
     });
+  });
+
+  it('renders MARKET_REVIEW_REGION as free-text field with comma-separated defaults', () => {
+    const onChange = vi.fn();
+
+    render(
+      <SettingsField
+        item={{
+          key: 'MARKET_REVIEW_REGION',
+          value: 'cn,jp',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'MARKET_REVIEW_REGION',
+            category: 'system',
+            dataType: 'string',
+            uiControl: 'text',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 1,
+          },
+        }}
+        value="cn,jp"
+        onChange={onChange}
+      />
+    );
+
+    const input = screen.getByLabelText('大盘复盘市场') as HTMLInputElement;
+    expect(input).toHaveValue('cn,jp');
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+
+    fireEvent.change(input, {
+      target: { value: 'cn,jp,kr' },
+    });
+
+    expect(onChange).toHaveBeenCalledWith('MARKET_REVIEW_REGION', 'cn,jp,kr');
   });
 
   it('renders context compression profile options with Chinese labels', () => {
@@ -488,8 +608,10 @@ describe('SettingsField', () => {
     expect(dialog).not.toHaveTextContent('GENERATION_BACKEND');
     expect(dialog).not.toHaveTextContent('配置样例');
     expect(dialog).not.toHaveTextContent('Phase 1');
-    expect(dialog).toHaveTextContent('高级说明');
-    expect(dialog).toHaveTextContent('LiteLLM');
+    expect(dialog).toHaveTextContent('本机已安装并登录对应 CLI');
+    expect(dialog).toHaveTextContent('默认模型配置会继续使用现有 API Key');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
   });
 
   it('describes agent auto generation without exposing implementation labels as the primary UI copy', () => {
@@ -511,7 +633,7 @@ describe('SettingsField', () => {
             isEditable: true,
             options: [
               { label: 'Auto', value: 'auto' },
-              { label: 'Default model tool calling', value: 'litellm' },
+              { label: 'Default model settings', value: 'litellm' },
             ],
             validation: { enum: ['auto', 'litellm'] },
             displayOrder: 1,
@@ -528,10 +650,11 @@ describe('SettingsField', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看 问股生成方式 配置说明' }));
 
     const dialog = screen.getByRole('dialog', { name: '问股生成方式' });
-    expect(dialog).toHaveTextContent('系统会选择当前可用的模型工具调用方式');
+    expect(dialog).toHaveTextContent('系统会选择当前可用的方式');
     expect(dialog).toHaveTextContent('如果不确定，选择“自动”即可');
-    expect(dialog).toHaveTextContent('高级说明');
-    expect(dialog).toHaveTextContent('LiteLLM');
+    expect(dialog).toHaveTextContent('这项设置只影响问股助手');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
     expect(dialog).not.toHaveTextContent('优先选择当前可用');
   });
 

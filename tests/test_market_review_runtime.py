@@ -11,6 +11,7 @@ ensure_litellm_stub()
 
 from src.core.market_review_runtime import build_market_review_runtime, has_configured_llm_runtime
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
+from src.llm.backend_registry import LOCAL_CLI_GENERATION_BACKEND_IDS
 
 
 class _FakeAnalyzer:
@@ -54,6 +55,8 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
             news_max_age_days=3,
             news_strategy_profile="short",
             has_search_capability_enabled=lambda: False,
+            generation_backend="litellm",
+            generation_fallback_backend="litellm",
         )
 
     def test_build_market_review_runtime_includes_legacy_provider_configs(self) -> None:
@@ -75,15 +78,33 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         self.assertIs(runtime_analyzer, analyzer)
         self.assertIsNone(runtime_search)
 
+    def test_build_market_review_runtime_defaults_legacy_public_discovery_off(self) -> None:
+        config = self._base_config()
+        del config.searxng_public_instances_enabled
+        config.has_search_capability_enabled = lambda: True
+        notifier = MagicMock()
+        search_service = MagicMock()
+
+        with patch("src.notification.NotificationService", return_value=notifier), \
+             patch("src.search_service.SearchService", return_value=search_service) as search_cls:
+            runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
+
+        self.assertFalse(
+            search_cls.call_args.kwargs["searxng_public_instances_enabled"]
+        )
+        self.assertIs(runtime_notifier, notifier)
+        self.assertIsNone(runtime_analyzer)
+        self.assertIs(runtime_search, search_service)
+
     def test_build_market_review_runtime_supports_litellm_channel_model_list(self) -> None:
         config = self._base_config()
         config.litellm_model = ""
         config.llm_model_list = [
             {
-                "model_name": "openai/gpt-5.5",
+                "model_name": "openai/gpt-6.1-sol",
                 "litellm_params": {
                     "api_key": "openai-channel-key",
-                    "model": "openai/gpt-5.5",
+                    "model": "openai/gpt-6.1-sol",
                     "api_base": "https://api.openrouter.ai/v1",
                 },
             }
@@ -106,7 +127,7 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
 
     def test_build_market_review_runtime_supports_explicit_litellm_model_only(self) -> None:
         config = self._base_config()
-        config.litellm_model = "openai/gpt-5.5"
+        config.litellm_model = "openai/gpt-6.1-sol"
 
         notifier = MagicMock()
         analyzer = MagicMock()
@@ -153,6 +174,36 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         self.assertEqual(analyzer.available_calls, 0)
         search_cls.assert_not_called()
 
+    def test_build_market_review_runtime_preserves_local_cli_backend_error_without_api_keys(self) -> None:
+        for backend_id in sorted(LOCAL_CLI_GENERATION_BACKEND_IDS):
+            with self.subTest(backend_id=backend_id):
+                config = self._base_config()
+                config.generation_backend = backend_id
+                config.generation_fallback_backend = ""
+                backend_error = GenerationError(
+                    error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
+                    stage="configuration",
+                    retryable=False,
+                    fallbackable=True,
+                    backend=backend_id,
+                    provider=backend_id,
+                    details={"reason": "executable_not_found"},
+                )
+                notifier = MagicMock()
+                analyzer = _FakeAnalyzer(backend_error=backend_error, available=False)
+
+                with patch("src.analyzer.GeminiAnalyzer", return_value=analyzer), \
+                     patch("src.notification.NotificationService", return_value=notifier), \
+                     patch("src.search_service.SearchService") as search_cls:
+                    runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
+
+                self.assertIs(runtime_notifier, notifier)
+                self.assertIs(runtime_analyzer, analyzer)
+                self.assertIsNone(runtime_search)
+                self.assertEqual(analyzer.backend_error_calls, 1)
+                self.assertEqual(analyzer.available_calls, 0)
+                search_cls.assert_not_called()
+
     def test_build_market_review_runtime_drops_unavailable_analyzer_without_backend_error(self) -> None:
         config = self._base_config()
         config.openai_api_key = "openai-key"
@@ -174,6 +225,15 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
     def test_has_configured_llm_runtime_returns_false_without_any_model_source(self) -> None:
         config = self._base_config()
         self.assertFalse(has_configured_llm_runtime(config))
+
+    def test_has_configured_llm_runtime_treats_local_cli_as_runtime_without_api_keys(self) -> None:
+        for backend_id in sorted(LOCAL_CLI_GENERATION_BACKEND_IDS):
+            with self.subTest(backend_id=backend_id):
+                config = self._base_config()
+                config.generation_backend = backend_id
+                config.generation_fallback_backend = ""
+
+                self.assertTrue(has_configured_llm_runtime(config))
 
     def test_has_configured_llm_runtime_supports_legacy_fields(self) -> None:
         base = self._base_config()
